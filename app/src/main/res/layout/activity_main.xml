@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/tv_rsrp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="RSRP: --" />
+
+        <TextView
+            android:id="@+id/tv_rsrq"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="RSRQ: --" />
+
+        <TextView
+            android:id="@+id/tv_sinr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SINR: --" />
+
+        <TextView
+            android:id="@+id/tv_cell_id"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Cell ID: --" />
+    </LinearLayout>
+
+    <org.osmdroid.views.MapView
+        android:id="@+id/map"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+</LinearLayout>
