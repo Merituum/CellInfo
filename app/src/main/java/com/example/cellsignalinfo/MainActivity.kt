@@ -4,13 +4,17 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.os.Bundle
 import android.preference.PreferenceManager
 import android.telephony.*
+import android.telephony.TelephonyManager.CellInfoCallback
+import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.PackageManagerCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import org.osmdroid.config.Configuration
@@ -56,6 +60,8 @@ class MainActivity : AppCompatActivity() {
         mapController.setZoom(15.0)
 
         requestPermissions()
+        //    getUserLocation()
+        getCellularInfo()
     }
 
     private fun requestPermissions() {
@@ -86,13 +92,43 @@ class MainActivity : AppCompatActivity() {
 
     private fun getCellularInfo() {
         val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
 
+        }
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             return
         }
 
-        val cellInfoList = telephonyManager.allCellInfo
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            telephonyManager.requestCellInfoUpdate(mainExecutor,object : CellInfoCallback(){
+                override fun onCellInfo(cellInfoList: List<CellInfo?>) {
+                    for (cellInfo in cellInfoList) {
+                        when (cellInfo) {
+                            is CellInfoLte -> {
+                                val cellIdentity = cellInfo.cellIdentity
+                                val signalStrength = cellInfo.cellSignalStrength as CellSignalStrengthLte
 
+                                val rsrp = signalStrength.rsrp
+                                val rsrq = signalStrength.rsrq
+                                val rssnr = signalStrength.rssnr
+                                val cellId = cellIdentity.ci
+                                Log.d("Listening", "RSRP: $rsrp dBm")
+                                tvRSRP.text = "RSRP: $rsrp dBm"
+                                tvRSRQ.text = "RSRQ: $rsrq dB"
+                                tvSINR.text = "SINR: $rssnr dB"
+                                tvCellId.text = "Cell ID: $cellId"
+
+                                break
+                            }
+                        }
+                    }
+                }
+
+            })
+        }
+        val cellInfoList = telephonyManager.allCellInfo
+        cellInfoList ?: return
         for (cellInfo in cellInfoList) {
             when (cellInfo) {
                 is CellInfoLte -> {
