@@ -3,18 +3,14 @@ package com.example.cellsignalinfo
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
 import android.preference.PreferenceManager
 import android.telephony.*
-import android.telephony.TelephonyManager.CellInfoCallback
 import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import androidx.core.content.PackageManagerCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import org.osmdroid.config.Configuration
@@ -31,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRSRQ: TextView
     private lateinit var tvSINR: TextView
     private lateinit var tvCellId: TextView
+    private var userMarker: Marker? = null // Marker dla lokalizacji użytkownika
 
     private val PERMISSION_REQUEST_CODE = 123
 
@@ -44,6 +41,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
+        // Inicjalizacja widoków
         tvRSRP = findViewById(R.id.tv_rsrp)
         tvRSRQ = findViewById(R.id.tv_rsrq)
         tvSINR = findViewById(R.id.tv_sinr)
@@ -59,9 +57,8 @@ class MainActivity : AppCompatActivity() {
         val mapController = mapView.controller
         mapController.setZoom(15.0)
 
+        // Żądanie uprawnień
         requestPermissions()
-        //    getUserLocation()
-        getCellularInfo()
     }
 
     private fun requestPermissions() {
@@ -72,7 +69,6 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.INTERNET,
             Manifest.permission.WRITE_EXTERNAL_STORAGE
         )
-
         ActivityCompat.requestPermissions(this, permissions, PERMISSION_REQUEST_CODE)
     }
 
@@ -86,23 +82,22 @@ class MainActivity : AppCompatActivity() {
             if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 getUserLocation()
                 getCellularInfo()
+            } else {
+                Log.e("Permissions", "Nie wszystkie uprawnienia zostały przyznane.")
             }
         }
     }
 
     private fun getCellularInfo() {
         val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-
-        }
-        packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Log.e("CellularInfo", "Brak uprawnień do lokalizacji.")
             return
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            telephonyManager.requestCellInfoUpdate(mainExecutor,object : CellInfoCallback(){
-                override fun onCellInfo(cellInfoList: List<CellInfo?>) {
+            telephonyManager.requestCellInfoUpdate(mainExecutor, object : TelephonyManager.CellInfoCallback() {
+                override fun onCellInfo(cellInfoList: List<CellInfo>) {
                     for (cellInfo in cellInfoList) {
                         when (cellInfo) {
                             is CellInfoLte -> {
@@ -113,77 +108,68 @@ class MainActivity : AppCompatActivity() {
                                 val rsrq = signalStrength.rsrq
                                 val rssnr = signalStrength.rssnr
                                 val cellId = cellIdentity.ci
-                                Log.d("Listening", "RSRP: $rsrp dBm")
+
+                                // Aktualizacja UI
                                 tvRSRP.text = "RSRP: $rsrp dBm"
                                 tvRSRQ.text = "RSRQ: $rsrq dB"
                                 tvSINR.text = "SINR: $rssnr dB"
                                 tvCellId.text = "Cell ID: $cellId"
-
+                                Log.d("CellularInfo", "RSRP: $rsrp dBm, Cell ID: $cellId")
                                 break
                             }
                         }
                     }
                 }
-
             })
-        }
-        val cellInfoList = telephonyManager.allCellInfo
-        cellInfoList ?: return
-        for (cellInfo in cellInfoList) {
-            when (cellInfo) {
-                is CellInfoLte -> {
-                    val cellIdentity = cellInfo.cellIdentity
-                    val signalStrength = cellInfo.cellSignalStrength as CellSignalStrengthLte
-
-                    val rsrp = signalStrength.rsrp
-                    val rsrq = signalStrength.rsrq
-                    val rssnr = signalStrength.rssnr
-                    val cellId = cellIdentity.ci
-
-                    tvRSRP.text = "RSRP: $rsrp dBm"
-                    tvRSRQ.text = "RSRQ: $rsrq dB"
-                    tvSINR.text = "SINR: $rssnr dB"
-                    tvCellId.text = "Cell ID: $cellId"
-
-                    break
-                }
-            }
         }
     }
 
     private fun getUserLocation() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Log.e("Location", "Brak uprawnień do lokalizacji.")
             return
         }
 
         fusedLocationClient.lastLocation.addOnSuccessListener { location ->
             location?.let {
                 val currentLocation = GeoPoint(it.latitude, it.longitude)
-
-                // Usuń poprzednie markery
-                mapView.overlays.clear()
-
-                // Dodaj marker
-                val marker = Marker(mapView)
-                marker.position = currentLocation
-                marker.title = "Twoja lokalizacja"
-                marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                mapView.overlays.add(marker)
-
-                // Przesuń mapę na lokalizację
+                updateUserMarker(currentLocation)
                 mapView.controller.setCenter(currentLocation)
                 mapView.controller.setZoom(15.0)
                 mapView.invalidate()
-
-                // Aktualizuj informacje o komórce po uzyskaniu lokalizacji
-                getCellularInfo()
+                Log.d("Location", "Lokalizacja zaktualizowana: ${it.latitude}, ${it.longitude}")
+                getCellularInfo() // Aktualizacja informacji o komórce po uzyskaniu lokalizacji
+            } ?: run {
+                Log.e("Location", "Nie udało się pobrać lokalizacji.")
             }
+        }.addOnFailureListener { exception ->
+            Log.e("Location", "Błąd podczas pobierania lokalizacji: ${exception.message}")
         }
+    }
+
+    private fun updateUserMarker(location: GeoPoint) {
+        // Jeśli marker już istnieje, aktualizuj jego pozycję
+        if (userMarker != null) {
+            userMarker?.position = location
+        } else {
+            // Jeśli marker nie istnieje, utwórz nowy
+            userMarker = Marker(mapView).apply {
+                position = location
+                title = "Twoja lokalizacja"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            }
+            mapView.overlays.add(userMarker)
+        }
+        mapView.invalidate() // Odśwież mapę
     }
 
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        // Ponowne żądanie lokalizacji przy wznowieniu aktywności
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            getUserLocation()
+        }
     }
 
     override fun onPause() {
