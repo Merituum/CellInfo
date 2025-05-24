@@ -1,4 +1,4 @@
-package com.example.twoja_nazwa_pakietu // Zmień na swoją nazwę pakietu
+package com.example.cellsignalinfo // Zmień na swoją nazwę pakietu
 
 import com.example.cellsignalinfo.NadajnikiApiService
 import retrofit2.Retrofit
@@ -11,8 +11,8 @@ object RetrofitInstance {
     // Upewnij się, że serwer PHP jest uruchomiony i dostępny pod tym adresem i portem.
     // Jeśli Twój skrypt PHP jest w podkatalogu, np. "api", to dodaj to do BASE_URL np. "http://10.0.2.2/api/"
     // lub dodaj do ścieżki w NadajnikiApiService @GET("api/nadajniki.php")
-    private const val BASE_URL = "http://10.0.2.2/" // Przykładowy adres dla emulatora, jeśli PHP jest w roocie serwera
-
+   // private const val BASE_URL = "http://10.0.2.2/" // Przykładowy adres dla emulatora, jeśli PHP jest w roocie serwera
+    private const val BASE_URL = "http://192.168.137.1/"
     val api: NadajnikiApiService by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
