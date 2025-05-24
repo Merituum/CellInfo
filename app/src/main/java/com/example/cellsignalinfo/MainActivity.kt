@@ -1,95 +1,258 @@
-package com.example.cellsignalinfo
+package com.example.cellsignalinfo // <<< ZMIEŃ NA SWOJĄ NAZWĘ PAKIETU
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.location.Location
 import android.os.Bundle
 import android.os.Looper
-import android.preference.PreferenceManager
-import android.provider.Settings
-import android.telephony.*
+import android.telephony.* // Nadal potrzebne, jeśli chcesz informacje o sieci, ale nie do lokalizacji BTS
 import android.util.Log
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.example.twoja_nazwa_pakietu.RetrofitInstance
 import com.google.android.gms.location.*
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+
+// Upewnij się, że te pliki (NadajnikInfo.kt, NadajnikiApiService.kt, RetrofitInstance.kt)
+// istnieją w Twoim projekcie i są poprawnie skonfigurowane dla Twojego lokalnego API PHP.
+// import com.example.twoja_nazwa_pakietu.NadajnikInfo
+// import com.example.twoja_nazwa_pakietu.NadajnikiApiService
+// import com.example.twoja_nazwa_pakietu.RetrofitInstance
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mapView: MapView
     private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var tvRSRP: TextView
-    private lateinit var tvRSRQ: TextView
-    private lateinit var tvSINR: TextView
-    private lateinit var tvCellId: TextView
-    private var userMarker: Marker? = null
-    private val cellTowerMarkers = mutableListOf<Marker>()
-
-    private var locationCallback: LocationCallback? = null
-    private var locationRequest: LocationRequest? = null
-    private lateinit var telephonyManager: TelephonyManager
-
-    // Dla API Android 12+
-    private var telephonyCallback: TelephonyCallback? = null
+    private lateinit var locationCallback: LocationCallback
+    private var myLocationOverlay: MyLocationNewOverlay? = null
+    private val databaseTowerMarkers = mutableListOf<Marker>() // Markery nadajników z Twojej bazy
 
     private var permissionsGranted = false
-    private val PERMISSION_REQUEST_CODE = 123
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val PERMISSION_REQUEST_CODE = 101
+        // Uprawnienie READ_PHONE_STATE jest potrzebne do TelephonyManager.listen/TelephonyCallback
+        // oraz do uzyskania informacji o sieci. Jeśli nie chcesz tych informacji, możesz je usunąć.
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.READ_PHONE_STATE,
-            Manifest.permission.INTERNET,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
+            Manifest.permission.ACCESS_NETWORK_STATE,
+            Manifest.permission.INTERNET
         )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        try {
-            // Konfiguracja OSM
-            val ctx = applicationContext
-            Configuration.getInstance().load(ctx, PreferenceManager.getDefaultSharedPreferences(ctx))
-            Configuration.getInstance().userAgentValue = packageName
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas konfiguracji OSM: ${e.message}")
-        }
+        Configuration.getInstance().load(applicationContext, getPreferences(Context.MODE_PRIVATE))
+        setContentView(R.layout.activity_main) // Upewnij się, że masz ten layout
 
-        setContentView(R.layout.activity_main)
-
-        // Inicjalizacja widoków
-        tvRSRP = findViewById(R.id.tv_rsrp)
-        tvRSRQ = findViewById(R.id.tv_rsrq)
-        tvSINR = findViewById(R.id.tv_sinr)
-        tvCellId = findViewById(R.id.tv_cell_id)
-
+        mapView = findViewById(R.id.map_view) // Upewnij się, że ID mapy jest poprawne
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
 
-        try {
-            // Inicjalizacja mapy OSM
-            mapView = findViewById(R.id.map)
-            mapView.setTileSource(TileSourceFactory.MAPNIK)
-            mapView.setMultiTouchControls(true)
-            mapView.controller.setZoom(15.0)
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas inicjalizacji mapy: ${e.message}")
+        setupMap()
+
+        if (checkPermissions()) {
+            permissionsGranted = true
+            Log.d(TAG, "Uprawnienia już przyznane przy starcie")
+            initializeAfterPermissions()
+        } else {
+            Log.d(TAG, "Prośba o uprawnienia przy starcie")
+            requestPermissions()
+        }
+    }
+
+    private fun initializeAfterPermissions() {
+        setupLocationUpdates()      // Lokalizacja użytkownika
+        setupTelephonyInfoDisplay() // Opcjonalnie: wyświetlanie informacji o sieci
+        getUserLocation()           // Ustawienie początkowej mapy na lokalizację użytkownika
+        fetchAndDisplayDatabaseMarkers() // NAJWAŻNIEJSZE: Pobranie i wyświetlenie markerów z Twojej bazy
+    }
+
+    private fun setupMap() {
+        mapView.setTileSource(TileSourceFactory.MAPNIK)
+        mapView.setMultiTouchControls(true)
+        mapView.controller.setZoom(12.0) // Zoom początkowy
+        // Centrum Poznania jako domyślne, zostanie nadpisane przez lokalizację użytkownika
+        mapView.controller.setCenter(GeoPoint(52.4064, 16.9252))
+    }
+
+    private fun setupLocationUpdates() {
+        if (!permissionsGranted) return
+
+        myLocationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(this), mapView)
+        myLocationOverlay?.enableMyLocation()
+        myLocationOverlay?.enableFollowLocation() // Mapa podąża za użytkownikiem
+        myLocationOverlay?.isDrawAccuracyEnabled = true
+        mapView.overlays.add(myLocationOverlay)
+
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L) // Co 10 sekund
+            .setMinUpdateIntervalMillis(5000L) // Minimalny interwał 5 sekund
+            .build()
+
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                // MyLocationNewOverlay sam obsługuje aktualizację pozycji użytkownika na mapie
+            }
         }
 
-        // Żądanie uprawnień
-        requestPermissions()
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+        }
+    }
+
+    private fun getUserLocation() {
+        if (!permissionsGranted || ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+            location?.let {
+                Log.d(TAG, "Uzyskano ostatnią znaną lokalizację: Lat: ${it.latitude}, Lon: ${it.longitude}")
+                val startPoint = GeoPoint(it.latitude, it.longitude)
+                mapView.controller.animateTo(startPoint) // Płynne przejście do lokalizacji użytkownika
+                mapView.controller.setZoom(15.0) // Ustawienie odpowiedniego zoomu
+            } ?: run {
+                Log.d(TAG, "Ostatnia znana lokalizacja jest null, czekam na aktualizacje.")
+            }
+        }
+    }
+
+    // Opcjonalna funkcja do wyświetlania informacji o sieci (jeśli chcesz)
+    private fun setupTelephonyInfoDisplay() {
+        if (!permissionsGranted || ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Brak uprawnienia READ_PHONE_STATE do odczytu informacji o sieci.")
+            return
+        }
+
+        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+
+        val phoneStateListener = object : PhoneStateListener() {
+            // Możesz tu nasłuchiwać na zmiany np. onSignalStrengthsChanged, onServiceStateChanged
+            // Poniżej prosty przykład pobrania danych raz.
+        }
+        // Jeśli chcesz nasłuchiwać na zmiany, musisz zarejestrować listenera:
+        // telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS or PhoneStateListener.LISTEN_SERVICE_STATE)
+
+        // Jednorazowe pobranie informacji o sieci
+        val networkOperatorName = telephonyManager.networkOperatorName
+        val networkType = when (telephonyManager.dataNetworkType) { // lub .voiceNetworkType
+            TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
+            TelephonyManager.NETWORK_TYPE_HSPAP -> "3G (HSPAP)"
+            TelephonyManager.NETWORK_TYPE_UMTS -> "3G (UMTS)"
+            TelephonyManager.NETWORK_TYPE_EDGE -> "2G (EDGE)"
+            TelephonyManager.NETWORK_TYPE_GPRS -> "2G (GPRS)"
+            TelephonyManager.NETWORK_TYPE_NR -> "5G"
+            else -> "Inny (${telephonyManager.dataNetworkType})"
+        }
+        Log.i(TAG, "Operator sieci: $networkOperatorName, Typ sieci danych: $networkType")
+        Toast.makeText(this, "Sieć: $networkOperatorName ($networkType)", Toast.LENGTH_LONG).show()
+    }
+
+
+    // --- Markery nadajników z Twojego lokalnego API PHP ---
+    private fun fetchAndDisplayDatabaseMarkers() {
+        if (!permissionsGranted) {
+            Log.w(TAG, "Brak uprawnień, nie można pobrać markerów z bazy.")
+            return
+        }
+
+        Log.d(TAG, "Rozpoczynanie pobierania danych nadajników z lokalnego API...")
+        lifecycleScope.launch { // Użyj lifecycleScope do automatycznego zarządzania korutyną
+            try {
+                // Upewnij się, że RetrofitInstance i NadajnikiApiService są poprawnie skonfigurowane
+                // dla Twojego lokalnego API PHP.
+                val response = RetrofitInstance.api.getNadajniki()
+                if (response.isSuccessful) {
+                    val nadajnikiList = response.body()
+                    if (nadajnikiList != null && nadajnikiList.isNotEmpty()) {
+                        Log.d(TAG, "Otrzymano ${nadajnikiList.size} nadajników z lokalnego API.")
+                        displayMarkersFromLocalDatabase(nadajnikiList)
+                    } else {
+                        Log.d(TAG, "Lokalne API zwróciło pustą listę lub null.")
+                        if (nadajnikiList?.isEmpty() == true) {
+                            Toast.makeText(this@MainActivity, "Brak danych nadajników z serwera.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } else {
+                    Log.e(TAG, "Błąd lokalnego API: ${response.code()} - ${response.errorBody()?.string()}")
+                    Toast.makeText(this@MainActivity, "Błąd serwera nadajników: ${response.code()}", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Wyjątek podczas pobierania danych z lokalnego API: ${e.message}", e)
+                Toast.makeText(this@MainActivity, "Błąd połączenia z serwerem nadajników: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun displayMarkersFromLocalDatabase(nadajnikiList: List<NadajnikInfo>) {
+        // Upewnij się, że klasa NadajnikInfo jest zdefiniowana i pasuje do odpowiedzi JSON
+        // z Twojego API PHP (pola: siec_id, miejscowosc, lokalizacja, LATIuke, LONGuke).
+
+        if (!::mapView.isInitialized) {
+            Log.e(TAG, "MapView nie zostało zainicjalizowane. Nie można dodać markerów z bazy.")
+            return
+        }
+
+        runOnUiThread { // Operacje na UI muszą być wykonane w głównym wątku
+            // Usuń poprzednie markery z bazy, aby uniknąć duplikatów przy odświeżaniu
+            for (marker in databaseTowerMarkers) {
+                mapView.overlays.remove(marker)
+            }
+            databaseTowerMarkers.clear()
+
+            var count = 0
+            for (nadajnik in nadajnikiList) {
+                // Upewnij się, że współrzędne (LATIuke, LONGuke w Twojej bazie) nie są null
+                if (nadajnik.latitude != null && nadajnik.longitude != null) {
+                    val towerGeoPoint = GeoPoint(nadajnik.latitude, nadajnik.longitude)
+                    // Tytuł i opis markera - dostosuj wg potrzeb
+                    val markerTitle = "${nadajnik.siecId ?: "Brak sieci"} - ${nadajnik.lokalizacja ?: nadajnik.miejscowosc ?: "Brak lokalizacji"}"
+                    val markerSnippet = "Standard: (tu wstaw dane o standardzie jeśli masz w API), Miejscowość: ${nadajnik.miejscowosc ?: "N/A"}"
+
+                    val dbMarker = Marker(mapView).apply {
+                        position = towerGeoPoint
+                        this.title = markerTitle
+                        this.snippet = markerSnippet
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        // Użyj innej ikony dla markerów z bazy, aby je odróżnić od lokalizacji użytkownika
+                        // Możesz stworzyć własną ikonę w res/drawable
+                        // icon = ContextCompat.getDrawable(this@MainActivity, R.drawable.your_database_marker_icon)
+                        icon = ContextCompat.getDrawable(this@MainActivity, android.R.drawable.ic_menu_myplaces) // Przykładowa ikona
+                    }
+                    mapView.overlays.add(dbMarker)
+                    databaseTowerMarkers.add(dbMarker)
+                    count++
+                } else {
+                    Log.w(TAG, "Pominięto nadajnik: ${nadajnik.lokalizacja} (ID sieci: ${nadajnik.siecId}) z powodu braku współrzędnych.")
+                }
+            }
+            mapView.invalidate() // Odśwież mapę, aby pokazać nowe markery
+            Log.d(TAG, "Zakończono dodawanie $count markerów z lokalnej bazy danych.")
+            if (count > 0) {
+                Toast.makeText(this, "Załadowano $count nadajników z bazy", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // --- Zarządzanie uprawnieniami ---
+    private fun checkPermissions(): Boolean {
+        return REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun requestPermissions() {
@@ -103,443 +266,61 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            // Sprawdź czy wszystkie uprawnienia zostały przyznane
             permissionsGranted = grantResults.isNotEmpty() &&
                     grantResults.all { it == PackageManager.PERMISSION_GRANTED }
 
             if (permissionsGranted) {
-                Log.d(TAG, "Wszystkie uprawnienia zostały przyznane")
-                setupLocationUpdates()
-                setupTelephonyCallback()
-                getUserLocation() // Inicjalna lokalizacja
+                Log.d(TAG, "Wszystkie uprawnienia zostały przyznane po prośbie")
+                initializeAfterPermissions()
             } else {
                 Log.e(TAG, "Nie wszystkie uprawnienia zostały przyznane")
-                // Sprawdź które uprawnienia są brakujące
                 val missingPermissions = permissions.filterIndexed { index, _ ->
                     grantResults.getOrNull(index) != PackageManager.PERMISSION_GRANTED
                 }
                 Log.e(TAG, "Brakujące uprawnienia: $missingPermissions")
-
-                // Pokaż wyjaśnienie
                 showPermissionRationale()
             }
         }
     }
 
     private fun showPermissionRationale() {
-        val shouldShowRationale = REQUIRED_PERMISSIONS.any {
-            shouldShowRequestPermissionRationale(it)
-        }
-
-        if (shouldShowRationale) {
-            // Użytkownik odrzucił, ale nie zaznaczył "nie pytaj ponownie"
-            AlertDialog.Builder(this)
-                .setTitle("Wymagane uprawnienia")
-                .setMessage("Aplikacja potrzebuje dostępu do lokalizacji i stanu telefonu, aby pokazać informacje o sieci komórkowej i twoją pozycję na mapie.")
-                .setPositiveButton("Przyznaj uprawnienia") { _, _ ->
-                    requestPermissions()
-                }
-                .setNegativeButton("Anuluj") { _, _ ->
-                    Toast.makeText(this, "Aplikacja nie będzie działać prawidłowo bez wymaganych uprawnień", Toast.LENGTH_LONG).show()
-                }
-                .setCancelable(false)
-                .show()
-        } else {
-            // Użytkownik zaznaczył "nie pytaj ponownie" - skieruj do ustawień
-            AlertDialog.Builder(this)
-                .setTitle("Uprawnienia wymagane")
-                .setMessage("Wymagane uprawnienia zostały trwale odrzucone. Przejdź do ustawień aplikacji, aby włączyć je ręcznie.")
-                .setPositiveButton("Otwórz ustawienia") { _, _ ->
-                    openAppSettings()
-                }
-                .setNegativeButton("Anuluj") { _, _ ->
-                    Toast.makeText(this, "Aplikacja nie będzie działać prawidłowo bez wymaganych uprawnień", Toast.LENGTH_LONG).show()
-                }
-                .setCancelable(false)
-                .show()
-        }
-    }
-
-    private fun openAppSettings() {
-        val intent = Intent().apply {
-            action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS
-            data = Uri.fromParts("package", packageName, null)
-        }
-        startActivity(intent)
-    }
-
-    // Metoda sprawdzająca uprawnienia lokalizacji
-    private fun hasLocationPermissions(): Boolean {
-        return (ActivityCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
-                ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED)
-    }
-
-    // Metoda sprawdzająca uprawnienia telefonu
-    private fun hasPhoneStatePermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(
-            this,
-            Manifest.permission.READ_PHONE_STATE
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    // Konfiguracja słuchacza aktualizacji lokalizacji
-    private fun setupLocationUpdates() {
-        try {
-            locationRequest = LocationRequest.Builder(5000) // 5 sekund
-                .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                .setMinUpdateIntervalMillis(3000) // 3 sekundy
-                .build()
-
-            locationCallback = object : LocationCallback() {
-                override fun onLocationResult(locationResult: LocationResult) {
-                    locationResult.lastLocation?.let { location ->
-                        val currentLocation = GeoPoint(location.latitude, location.longitude)
-                        updateUserMarker(currentLocation)
-                        Log.d(TAG, "Aktualizacja lokalizacji: ${location.latitude}, ${location.longitude}")
-                    }
-                }
+        AlertDialog.Builder(this)
+            .setTitle("Wymagane uprawnienia")
+            .setMessage("Aplikacja wymaga uprawnień do lokalizacji i dostępu do internetu, aby poprawnie działać. Uprawnienie do stanu telefonu jest opcjonalne dla wyświetlania informacji o sieci.")
+            .setPositiveButton("OK") { dialog, _ ->
+                dialog.dismiss()
             }
-            Log.d(TAG, "LocationRequest i LocationCallback zainicjalizowane")
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas inicjalizacji LocationRequest: ${e.message}")
-            locationRequest = null
-            locationCallback = null
-        }
-    }
-
-    // Uruchomienie nasłuchiwania na aktualizacje lokalizacji
-    private fun startLocationUpdates() {
-        // Sprawdź czy locationRequest i callback zostały zainicjalizowane
-        if (locationRequest == null || locationCallback == null) {
-            Log.d(TAG, "locationRequest lub locationCallback jest null, próba inicjalizacji")
-            setupLocationUpdates()
-            // Jeśli dalej są null, zakończ metodę
-            if (locationRequest == null || locationCallback == null) {
-                Log.e(TAG, "Nie można zainicjalizować locationRequest lub locationCallback")
-                return
-            }
-        }
-
-        // Sprawdź uprawnienia
-        if (!hasLocationPermissions()) {
-            Log.e(TAG, "Brak uprawnień do lokalizacji")
-            return
-        }
-
-        try {
-            // Jeszcze raz sprawdź uprawnienia tuż przed wywołaniem API
-            if (hasLocationPermissions()) {
-                fusedLocationClient.requestLocationUpdates(
-                    locationRequest!!,
-                    locationCallback!!,
-                    Looper.getMainLooper()
-                )
-                Log.d(TAG, "Uruchomiono aktualizacje lokalizacji")
-            }
-        } catch (se: SecurityException) {
-            Log.e(TAG, "SecurityException podczas żądania aktualizacji lokalizacji: ${se.message}")
-            Toast.makeText(
-                this,
-                "Brak uprawnień do lokalizacji. Sprawdź ustawienia aplikacji.",
-                Toast.LENGTH_LONG
-            ).show()
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas żądania aktualizacji lokalizacji: ${e.message}")
-        }
-    }
-
-    // Zatrzymanie nasłuchiwania aktualizacji lokalizacji
-    private fun stopLocationUpdates() {
-        locationCallback?.let {
-            try {
-                fusedLocationClient.removeLocationUpdates(it)
-                Log.d(TAG, "Zatrzymano aktualizacje lokalizacji")
-            } catch (e: Exception) {
-                Log.e(TAG, "Błąd podczas zatrzymywania aktualizacji lokalizacji: ${e.message}")
-            }
-        }
-    }
-
-    // Konfiguracja TelephonyCallback
-    private fun setupTelephonyCallback() {
-        if (!hasPhoneStatePermission()) {
-            Log.e(TAG, "Brak uprawnień do konfiguracji listenera sieci")
-            return
-        }
-
-        try {
-            val callback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
-                override fun onCellInfoChanged(cellInfoList: MutableList<CellInfo>) {
-                    processCellInfo(cellInfoList)
-                }
-            }
-
-            telephonyCallback = callback
-            telephonyManager.registerTelephonyCallback(mainExecutor, callback)
-            Log.d(TAG, "Zarejestrowano TelephonyCallback")
-        } catch (se: SecurityException) {
-            Log.e(TAG, "SecurityException podczas rejestracji TelephonyCallback: ${se.message}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas rejestracji TelephonyCallback: ${e.message}")
-        }
-    }
-
-    // Przetwarzanie informacji o komórce
-    private fun processCellInfo(cellInfoList: List<CellInfo>) {
-        if (cellInfoList.isEmpty()) {
-            Log.d(TAG, "Lista cellInfo jest pusta")
-            return
-        }
-
-        // Usuń wszystkie poprzednie markery stacji bazowych
-        runOnUiThread {
-            for (marker in cellTowerMarkers) {
-                mapView.overlays.remove(marker)
-            }
-            cellTowerMarkers.clear()
-        }
-
-        for (cellInfo in cellInfoList) {
-            try {
-                when (cellInfo) {
-                    is CellInfoLte -> {
-                        processCellInfoLte(cellInfo)
-                        break // Po przetworzeniu pierwszej komórki przerwij
-                    }
-                    is CellInfoNr -> {
-                        processCellInfoNr(cellInfo)
-                        break
-                    }
-                    else -> {
-                        Log.d(TAG, "Nieobsługiwany typ komórki: ${cellInfo.javaClass.simpleName}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Błąd podczas przetwarzania informacji o komórce: ${e.message}")
-            }
-        }
-
-        // Odśwież mapę
-        runOnUiThread {
-            mapView.invalidate()
-        }
-    }
-
-    // Przetwarzanie informacji o komórce LTE
-    private fun processCellInfoLte(cellInfo: CellInfoLte) {
-        val cellIdentity = cellInfo.cellIdentity
-        val signalStrength = cellInfo.cellSignalStrength
-
-        val rsrp = signalStrength.rsrp
-        val rsrq = signalStrength.rsrq
-        val rssnr = signalStrength.rssnr
-        val cellId = cellIdentity.ci
-        val tac = cellIdentity.tac
-        val pci = cellIdentity.pci
-        val earfcn = cellIdentity.earfcn
-
-        runOnUiThread {
-            tvRSRP.text = "RSRP: $rsrp dBm"
-            tvRSRQ.text = "RSRQ: $rsrq dB"
-            tvSINR.text = "SINR: $rssnr dB"
-            tvCellId.text = "Cell ID: $cellId, TAC: $tac, PCI: $pci"
-        }
-
-        Log.d(TAG, "LTE - RSRP: $rsrp dBm, RSRQ: $rsrq dB, SINR: $rssnr dB, Cell ID: $cellId")
-
-        // Dodaj marker nadajnika na mapie
-        addCellTowerMarker(cellId, "LTE Cell: $cellId\nRSRP: $rsrp dBm\nPCI: $pci")
-    }
-
-    // Przetwarzanie informacji o komórce 5G (NR)
-    private fun processCellInfoNr(cellInfo: CellInfoNr) {
-        val cellIdentity = cellInfo.cellIdentity as CellIdentityNr
-        val signalStrength = cellInfo.cellSignalStrength as CellSignalStrengthNr
-
-        val ssRsrp = signalStrength.csiRsrp
-        val ssRsrq = signalStrength.csiRsrq
-        val ssSinr = signalStrength.csiSinr
-        val nrArfcn = cellIdentity.nrarfcn
-        val pci = cellIdentity.pci
-
-        runOnUiThread {
-            tvRSRP.text = "5G RSRP: $ssRsrp dBm"
-            tvRSRQ.text = "5G RSRQ: $ssRsrq dB"
-            tvSINR.text = "5G SINR: $ssSinr dB"
-            tvCellId.text = "5G PCI: $pci, ARFCN: $nrArfcn"
-        }
-
-        Log.d(TAG, "5G - RSRP: $ssRsrp dBm, RSRQ: $ssRsrq dB, SINR: $ssSinr dB, PCI: $pci")
-
-        // Dodaj marker nadajnika 5G
-        addCellTowerMarker(pci, "5G Cell: $pci\nRSRP: $ssRsrp dBm\nARFCN: $nrArfcn")
-    }
-
-    private fun getCellularInfo() {
-        if (!hasPhoneStatePermission()) {
-            Log.e(TAG, "Brak uprawnień do pobierania informacji o sieci")
-            return
-        }
-
-        try {
-            if (hasPhoneStatePermission()) {
-                telephonyManager.requestCellInfoUpdate(mainExecutor, object : TelephonyManager.CellInfoCallback() {
-                    override fun onCellInfo(cellInfoList: List<CellInfo>) {
-                        processCellInfo(cellInfoList)
-                    }
-                })
-            }
-        } catch (se: SecurityException) {
-            Log.e(TAG, "SecurityException podczas pobierania informacji o komórce: ${se.message}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas pobierania informacji o komórce: ${e.message}")
-        }
-    }
-
-    private fun getUserLocation() {
-        if (!hasLocationPermissions()) {
-            Log.e(TAG, "Brak uprawnień do lokalizacji")
-            return
-        }
-
-        try {
-            if (hasLocationPermissions()) {
-                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                    location?.let {
-                        val currentLocation = GeoPoint(it.latitude, it.longitude)
-                        updateUserMarker(currentLocation)
-                        mapView.controller.setCenter(currentLocation)
-                        mapView.controller.setZoom(15.0)
-                        mapView.invalidate()
-                        Log.d(TAG, "Lokalizacja zaktualizowana: ${it.latitude}, ${it.longitude}")
-                        getCellularInfo() // Aktualizacja informacji o komórce po uzyskaniu lokalizacji
-                    } ?: run {
-                        Log.e(TAG, "Nie udało się pobrać lokalizacji")
-                        // Jeśli nie można pobrać ostatniej lokalizacji, rozpocznij aktualizacje
-                        if (hasLocationPermissions()) {
-                            startLocationUpdates()
-                        }
-                    }
-                }.addOnFailureListener { exception ->
-                    Log.e(TAG, "Błąd podczas pobierania lokalizacji: ${exception.message}")
-                    if (hasLocationPermissions()) {
-                        startLocationUpdates() // Spróbuj rozpocząć aktualizacje w przypadku awarii
-                    }
-                }
-            }
-        } catch (se: SecurityException) {
-            Log.e(TAG, "SecurityException podczas pobierania lokalizacji: ${se.message}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Wyjątek podczas pobierania lokalizacji: ${e.message}")
-        }
-    }
-
-    private fun updateUserMarker(location: GeoPoint) {
-        try {
-            runOnUiThread {
-                // Jeśli marker już istnieje, aktualizuj jego pozycję
-                if (userMarker != null) {
-                    userMarker?.position = location
-                } else {
-                    // Jeśli marker nie istnieje, utwórz nowy
-                    userMarker = Marker(mapView).apply {
-                        position = location
-                        title = "Twoja lokalizacja"
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        icon = resources.getDrawable(android.R.drawable.ic_menu_mylocation, theme)
-                    }
-                    mapView.overlays.add(userMarker)
-                }
-                mapView.invalidate() // Odśwież mapę
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas aktualizacji markera użytkownika: ${e.message}")
-        }
-    }
-
-    // Dodawanie markera stacji bazowej na mapie
-    private fun addCellTowerMarker(cellId: Int, title: String) {
-        try {
-            // Użyjemy przybliżonej lokalizacji - 500m od użytkownika w kierunku zależnym od cellId
-            userMarker?.let { marker ->
-                val userLocation = marker.position
-                val angle = Math.toRadians((cellId % 360).toDouble())
-                val distance = 500.0 // 500 metrów
-
-                // Przybliżone obliczenie nowej lokalizacji
-                val earthRadius = 6371000.0 // Promień Ziemi w metrach
-                val lat2 = Math.asin(
-                    Math.sin(Math.toRadians(userLocation.latitude)) * Math.cos(distance / earthRadius) +
-                            Math.cos(Math.toRadians(userLocation.latitude)) * Math.sin(distance / earthRadius) * Math.cos(angle)
-                )
-                val lng2 = Math.toRadians(userLocation.longitude) +
-                        Math.atan2(
-                            Math.sin(angle) * Math.sin(distance / earthRadius) * Math.cos(Math.toRadians(userLocation.latitude)),
-                            Math.cos(distance / earthRadius) - Math.sin(Math.toRadians(userLocation.latitude)) * Math.sin(lat2)
-                        )
-
-                val towerLocation = GeoPoint(Math.toDegrees(lat2), Math.toDegrees(lng2))
-
-                runOnUiThread {
-                    val towerMarker = Marker(mapView).apply {
-                        position = towerLocation
-                        this.title = title
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        icon = resources.getDrawable(android.R.drawable.ic_menu_compass, theme)
-                    }
-
-                    mapView.overlays.add(towerMarker)
-                    cellTowerMarkers.add(towerMarker)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Błąd podczas tworzenia markera stacji bazowej: ${e.message}")
-        }
+            .create()
+            .show()
     }
 
     override fun onResume() {
         super.onResume()
-        mapView.onResume()
-
-        // Sprawdź uprawnienia przed wywołaniem funkcji wymagających uprawnień
-        if (hasLocationPermissions()) {
-            try {
-                startLocationUpdates()
-                getCellularInfo()
-            } catch (se: SecurityException) {
-                Log.e(TAG, "SecurityException w onResume: ${se.message}")
+        mapView.onResume() // Ważne dla cyklu życia mapy OSMDroid
+        if (permissionsGranted) {
+            // Wznów aktualizacje lokalizacji, jeśli były zatrzymane w onPause
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                if(::fusedLocationClient.isInitialized && ::locationCallback.isInitialized) {
+                    val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L).build()
+                    fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+                }
             }
-        } else {
-            Log.d(TAG, "Brak uprawnień lokalizacji w onResume")
+            myLocationOverlay?.enableMyLocation()
         }
     }
 
     override fun onPause() {
         super.onPause()
-        mapView.onPause()
-        stopLocationUpdates()
+        mapView.onPause() // Ważne dla cyklu życia mapy OSMDroid
+        // Zatrzymaj aktualizacje lokalizacji, aby oszczędzać baterię
+        if (::fusedLocationClient.isInitialized && ::locationCallback.isInitialized) {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        }
+        myLocationOverlay?.disableMyLocation()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-
-        // Anulowanie rejestracji TelephonyCallback
-        telephonyCallback?.let {
-            try {
-                telephonyManager.unregisterTelephonyCallback(it)
-                Log.d(TAG, "Anulowano rejestrację TelephonyCallback")
-            } catch (e: Exception) {
-                Log.e(TAG, "Błąd przy anulowaniu rejestracji TelephonyCallback: ${e.message}")
-            }
-        }
-
-        // Zatrzymaj aktualizacje lokalizacji
-        stopLocationUpdates()
+        mapView.onDetach() // Zwolnij zasoby mapy OSMDroid
     }
 }

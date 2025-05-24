@@ -67,7 +67,16 @@ dependencies {
     implementation("androidx.preference:preference-ktx:1.2.1") // dla PreferenceManager
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.core:core-ktx:1.12.0")
+    // Retrofit
+    implementation("com.squareup.retrofit2:retrofit:2.9.0") // Sprawdź najnowszą wersję Retrofit
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0") // Konwerter Gson dla Retrofit [2]
 
+    // Gson (jeśli nie jest automatycznie dołączony przez konwerter, choć zazwyczaj jest)
+    implementation("com.google.code.gson:gson:2.10.1") // Sprawdź najnowszą wersję Gson [3]
+
+    // Coroutines dla operacji asynchronicznych
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") // Sprawdź najnowszą wersję
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 
 
 }
