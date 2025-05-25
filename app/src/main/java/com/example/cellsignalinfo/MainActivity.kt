@@ -1,8 +1,10 @@
-package com.example.cellsignalinfo // <<< ZMIEŃ NA SWOJĄ NAZWĘ PAKIETU
-
+package com.example.cellsignalinfo
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.*
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.location.Location
 import android.os.Build
 import android.os.Bundle
@@ -29,12 +31,6 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
-// Upewnij się, że te pliki (NadajnikInfo.kt, NadajnikiApiService.kt, RetrofitInstance.kt)
-// istnieją w Twoim projekcie i są poprawnie skonfigurowane dla Twojego lokalnego API PHP.
-// import com.example.twoja_nazwa_pakietu.NadajnikInfo // Jeśli w innym pakiecie
-// import com.example.twoja_nazwa_pakietu.NadajnikiApiService
-// import com.example.twoja_nazwa_pakietu.RetrofitInstance
-
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mapView: MapView
@@ -53,6 +49,125 @@ class MainActivity : AppCompatActivity() {
     private var cellInfoCallback: Any? = null // For TelephonyCallback or PhoneStateListener
 
     private var permissionsGranted = false
+
+    // NOWE FUNKCJE DLA KOLOROWYCH MARKERÓW
+    data class StationGroup(
+        val latitude: Double,
+        val longitude: Double,
+        val nadajniki: MutableList<NadajnikInfo> = mutableListOf()
+    ) {
+        fun addNadajnik(nadajnik: NadajnikInfo) {
+            nadajniki.add(nadajnik)
+        }
+
+        fun getUniqueOperators(): List<String> {
+            return nadajniki.mapNotNull { it.siecId }.distinct()
+        }
+    }
+
+    private fun getOperatorColor(operator: String?): Int {
+        return when (operator?.lowercase()) {
+            "orange" -> Color.rgb(255, 165, 0) // Pomarańczowy
+            "plus" -> Color.rgb(0, 128, 0) // Zielony
+            "t-mobile", "tmobile" -> Color.rgb(255, 0, 255) // Magentowy
+            "play" -> Color.rgb(128, 0, 128) // Fioletowy
+            else -> Color.GRAY // Domyślny kolor dla nieznanych operatorów
+        }
+    }
+
+    private fun createColoredMarkerDrawable(colors: List<Int>): Drawable {
+        val size = 60 // Rozmiar markera w dp
+        val sizePixels = (size * resources.displayMetrics.density).toInt()
+
+        val bitmap = Bitmap.createBitmap(sizePixels, sizePixels, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        when (colors.size) {
+            1 -> {
+                // Jeden kolor - pełne koło
+                val paint = Paint().apply {
+                    color = colors[0]
+                    isAntiAlias = true
+                    style = Paint.Style.FILL
+                }
+                val radius = sizePixels / 2f
+                canvas.drawCircle(radius, radius, radius * 0.2f, paint)
+
+                // Biała obwódka
+                val strokePaint = Paint().apply {
+                    color = Color.WHITE
+                    isAntiAlias = true
+                    style = Paint.Style.STROKE
+                    strokeWidth = 4f
+                }
+                canvas.drawCircle(radius, radius, radius * 0.2f, strokePaint)
+            }
+            2 -> {
+                // Dwa kolory - podzielone pionowo
+                val paint1 = Paint().apply { color = colors[0]; isAntiAlias = true }
+                val paint2 = Paint().apply { color = colors[1]; isAntiAlias = true }
+
+                val centerX = sizePixels / 2f
+                val centerY = sizePixels / 2f
+                val radius = sizePixels / 2f * 0.2f
+
+                val rect = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+                canvas.drawArc(rect, -90f, 180f, true, paint1)
+                canvas.drawArc(rect, 90f, 180f, true, paint2)
+            }
+            3 -> {
+                // Trzy kolory - podzielone na 3 sektory
+                val centerX = sizePixels / 2f
+                val centerY = sizePixels / 2f
+                val radius = sizePixels / 2f * 0.2f
+
+                val paint1 = Paint().apply { color = colors[0]; isAntiAlias = true }
+                val paint2 = Paint().apply { color = colors[1]; isAntiAlias = true }
+                val paint3 = Paint().apply { color = colors[2]; isAntiAlias = true }
+
+                val rect = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+                canvas.drawArc(rect, -90f, 120f, true, paint1)
+                canvas.drawArc(rect, 30f, 120f, true, paint2)
+                canvas.drawArc(rect, 150f, 120f, true, paint3)
+            }
+            4 -> {
+                // Cztery kolory - podzielone na ćwiartki
+                val centerX = sizePixels / 2f
+                val centerY = sizePixels / 2f
+                val radius = sizePixels / 2f * 0.2f
+
+                val rect = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+
+                val paints = colors.map { color ->
+                    Paint().apply {
+                        this.color = color
+                        isAntiAlias = true
+                    }
+                }
+
+                canvas.drawArc(rect, -90f, 90f, true, paints[0]) // Góra
+                canvas.drawArc(rect, 0f, 90f, true, paints[1])   // Prawo
+                canvas.drawArc(rect, 90f, 90f, true, paints[2])  // Dół
+                canvas.drawArc(rect, 180f, 90f, true, paints[3]) // Lewo
+            }
+            else -> {
+                // Więcej niż 4 kolory - użyj pierwszych 4
+                return createColoredMarkerDrawable(colors.take(4))
+            }
+        }
+
+        // Dodaj czarną obwódkę
+        val strokePaint = Paint().apply {
+            color = Color.BLACK
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        val radius = sizePixels / 2f
+        canvas.drawCircle(radius, radius, radius * 0.2f, strokePaint)
+
+        return BitmapDrawable(resources, bitmap)
+    }
 
     companion object {
         private const val TAG = "MainActivity"
@@ -203,7 +318,6 @@ class MainActivity : AppCompatActivity() {
         cellInfoCallback = phoneStateListener
         Log.d(TAG, "Zarejestrowano PhoneStateListener (starsze API)")
     }
-
 
     private fun requestCellInfoUpdate() {
         if (telephonyManager == null || ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -366,37 +480,82 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun displayMarkersFromLocalDatabase(nadajnikiList: List<NadajnikInfo>) { // Upewnij się, że klasa NadajnikInfo jest zdefiniowana
+    // ZMIENIONA FUNKCJA - TERAZ Z KOLOROWYMI MARKERAMI
+    private fun displayMarkersFromLocalDatabase(nadajnikiList: List<NadajnikInfo>) {
         if (!::mapView.isInitialized) {
             Log.e(TAG, "MapView nie zostało zainicjalizowane.")
             return
         }
+
         runOnUiThread {
+            // Usuń poprzednie markery
             for (marker in databaseTowerMarkers) mapView.overlays.remove(marker)
             databaseTowerMarkers.clear()
-            var count = 0
+
+            // Grupuj nadajniki według lokalizacji (z tolerancją na niewielkie różnice w koordynatach)
+            val stationGroups = mutableMapOf<String, StationGroup>()
+
             for (nadajnik in nadajnikiList) {
                 if (nadajnik.latitude != null && nadajnik.longitude != null) {
-                    val towerGeoPoint = GeoPoint(nadajnik.latitude, nadajnik.longitude)
-                    val markerTitle = "${nadajnik.siecId ?: ""} - ${nadajnik.lokalizacja ?: nadajnik.miejscowosc ?: ""}"
-                    val markerSnippet = "Miejscowość: ${nadajnik.miejscowosc ?: "N/A"}" // Dodaj więcej info jeśli chcesz
-                    val dbMarker = Marker(mapView).apply {
-                        position = towerGeoPoint
-                        this.title = markerTitle
-                        this.snippet = markerSnippet
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        icon = ContextCompat.getDrawable(this@MainActivity, android.R.drawable.ic_menu_myplaces)
+                    // Zaokrąglij koordynaty do 4 miejsc po przecinku dla grupowania
+                    val roundedLat = String.format("%.4f", nadajnik.latitude)
+                    val roundedLon = String.format("%.4f", nadajnik.longitude)
+                    val locationKey = "$roundedLat,$roundedLon"
+
+                    val group = stationGroups.getOrPut(locationKey) {
+                        StationGroup(nadajnik.latitude, nadajnik.longitude)
                     }
-                    mapView.overlays.add(dbMarker)
-                    databaseTowerMarkers.add(dbMarker)
-                    count++
+                    group.addNadajnik(nadajnik)
                 } else {
                     Log.w(TAG, "Pominięto nadajnik (brak koordynatów): ${nadajnik.lokalizacja}")
                 }
             }
+
+            // Twórz markery dla każdej grupy
+            var markerCount = 0
+            for (group in stationGroups.values) {
+                val uniqueOperators = group.getUniqueOperators()
+                val operatorColors = uniqueOperators.map { getOperatorColor(it) }
+
+                val towerGeoPoint = GeoPoint(group.latitude, group.longitude)
+
+                // Twórz tytuł i opis markera
+                val operatorNames = uniqueOperators.joinToString(", ")
+                val markerTitle = if (uniqueOperators.size == 1) {
+                    "${uniqueOperators.first()} - ${group.nadajniki.first().lokalizacja ?: group.nadajniki.first().miejscowosc ?: ""}"
+                } else {
+                    "Stacja wielooperatorska - ${group.nadajniki.first().lokalizacja ?: group.nadajniki.first().miejscowosc ?: ""}"
+                }
+
+                val markerSnippet = buildString {
+                    append("Operatorzy: $operatorNames\n")
+                    append("Miejscowość: ${group.nadajniki.first().miejscowosc ?: "N/A"}\n")
+                    append("Liczba nadajników: ${group.nadajniki.size}")
+                }
+
+                // Twórz marker z kolorową ikoną
+                val dbMarker = Marker(mapView).apply {
+                    position = towerGeoPoint
+                    title = markerTitle
+                    snippet = markerSnippet
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                    // Ustaw kolorową ikonę
+                    icon = if (operatorColors.isNotEmpty()) {
+                        createColoredMarkerDrawable(operatorColors)
+                    } else {
+                        ContextCompat.getDrawable(this@MainActivity, android.R.drawable.ic_menu_myplaces)
+                    }
+                }
+
+                mapView.overlays.add(dbMarker)
+                databaseTowerMarkers.add(dbMarker)
+                markerCount++
+            }
+
             mapView.invalidate()
-            Log.d(TAG, "Zakończono dodawanie $count markerów z lokalnej bazy danych.")
-            if (count > 0) Toast.makeText(this, "Załadowano $count nadajników z bazy", Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "Zakończono dodawanie $markerCount markerów z lokalnej bazy danych.")
+            if (markerCount > 0) Toast.makeText(this, "Załadowano $markerCount stacji z bazy", Toast.LENGTH_SHORT).show()
         }
     }
 
