@@ -1,4 +1,4 @@
-package com.example.cellsignalinfo // Zmień na swoją nazwę pakietu
+package com.example.cellsignalinfo 
 
 import com.example.cellsignalinfo.NadajnikiApiService
 import retrofit2.Retrofit
